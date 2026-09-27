@@ -19,17 +19,21 @@ namespace BaseballTyping.Visuals
         private const float IdleBatAngle = 58f;
         private const float WindUpBatAngle = 88f;
         private const float SwingEndAngle = -104f;
-        private const float SwingSeconds = 0.26f;
-        private const float RecoverSeconds = 0.22f;
+        private const float ApproachSeconds = 0.12f;
+        private const float SwingSeconds = 0.22f;
+        private const float RecoverSeconds = 0.28f;
 
         private SpriteRenderer body;
         private SpriteRenderer bat;
         private Sprite[] idleFrames;
         private Vector3 basePosition;
+        private Vector3 swingFrom;
+        private Vector3 swingTarget;
         private Pose pose = Pose.Idle;
         private float poseTime;
         private float swingTime;
         private float bobTime;
+        private bool strikeoutAfterSwing;
 
         public static BatterCharacter Build()
         {
@@ -77,6 +81,7 @@ namespace BaseballTyping.Visuals
             pose = Pose.Idle;
             poseTime = 0f;
             swingTime = 0f;
+            strikeoutAfterSwing = false;
             body.color = Color.white;
             transform.position = basePosition;
             transform.localRotation = Quaternion.identity;
@@ -90,9 +95,23 @@ namespace BaseballTyping.Visuals
 
         public void Swing()
         {
-            if (pose == Pose.Strikeout) return;
+            SwingAt(basePosition + new Vector3(0.85f, 0.15f, 0f));
+        }
+
+        /// <summary>
+        /// Steps toward the pitch, swings through it, then returns to the batter's box.
+        /// </summary>
+        public void SwingAt(Vector3 ballWorldPosition, bool strikeoutAfter = false)
+        {
+            if (pose == Pose.Strikeout && !strikeoutAfter) return;
+
             pose = Pose.Swing;
             swingTime = 0f;
+            swingFrom = transform.position;
+            swingTarget = ApproachPoint(ballWorldPosition);
+            strikeoutAfterSwing = strikeoutAfter;
+            body.color = Color.white;
+            transform.localRotation = Quaternion.identity;
         }
 
         public void Strikeout(float seconds)
@@ -136,25 +155,58 @@ namespace BaseballTyping.Visuals
 
         private void UpdateSwing()
         {
-            if (swingTime <= SwingSeconds)
+            body.sprite = idleFrames[1];
+            transform.localRotation = Quaternion.identity;
+
+            if (swingTime <= ApproachSeconds)
             {
-                float t = Mathf.Clamp01(swingTime / SwingSeconds);
-                float eased = 1f - (1f - t) * (1f - t);
-                BatAngle(Mathf.Lerp(WindUpBatAngle, SwingEndAngle, eased));
-                transform.position = basePosition + new Vector3(0.06f * eased, 0f, 0f);
-                body.sprite = idleFrames[1];
+                float t = EaseOut(Mathf.Clamp01(swingTime / ApproachSeconds));
+                transform.position = Vector3.Lerp(swingFrom, swingTarget, t);
+                BatAngle(Mathf.LerpAngle(CurrentBatAngle(), WindUpBatAngle, t));
                 return;
             }
 
-            float recover = Mathf.Clamp01((swingTime - SwingSeconds) / RecoverSeconds);
-            BatAngle(Mathf.Lerp(SwingEndAngle, IdleBatAngle, recover));
-            transform.position = Vector3.Lerp(basePosition + new Vector3(0.06f, 0f, 0f), basePosition, recover);
+            float swingElapsed = swingTime - ApproachSeconds;
+            if (swingElapsed <= SwingSeconds)
+            {
+                float t = EaseOut(Mathf.Clamp01(swingElapsed / SwingSeconds));
+                transform.position = swingTarget;
+                BatAngle(Mathf.Lerp(WindUpBatAngle, SwingEndAngle, t));
+                return;
+            }
+
+            float recover = Mathf.Clamp01((swingElapsed - SwingSeconds) / RecoverSeconds);
+            float recoverEase = recover * recover;
+            BatAngle(Mathf.Lerp(SwingEndAngle, IdleBatAngle, recoverEase));
+            transform.position = Vector3.Lerp(swingTarget, basePosition, recoverEase);
 
             if (recover >= 1f)
             {
+                transform.position = basePosition;
+                if (strikeoutAfterSwing)
+                {
+                    strikeoutAfterSwing = false;
+                    Strikeout(1.4f);
+                    return;
+                }
+
                 pose = Pose.Idle;
                 body.sprite = idleFrames[0];
             }
+        }
+
+        private Vector3 ApproachPoint(Vector3 ballWorldPosition)
+        {
+            Vector3 target = ballWorldPosition + new Vector3(-0.55f, -0.12f, 0f);
+            target.x = Mathf.Clamp(target.x, basePosition.x + 0.15f, Ballpark.PlateX + 1.15f);
+            target.y = Mathf.Clamp(target.y, Ballpark.DirtTopY + 0.35f, Ballpark.LaneMaxY + 0.35f);
+            target.z = 0f;
+            return target;
+        }
+
+        private static float EaseOut(float t)
+        {
+            return 1f - (1f - t) * (1f - t);
         }
 
         private void Bob(float speed, float amount)

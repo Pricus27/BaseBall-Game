@@ -15,6 +15,8 @@ namespace BaseballTyping
         private BaseballGame game;
         private SpriteRenderer ball;
         private SpriteRenderer flame;
+        private SpriteRenderer aura;
+        private bool juiced;
         private readonly List<SpriteRenderer> trail = new List<SpriteRenderer>();
         private readonly Queue<Vector3> trailPositions = new Queue<Vector3>();
 
@@ -30,6 +32,7 @@ namespace BaseballTyping
         public PitchKind Kind => spec.Kind;
         public string Word => word;
         public PitchSpec Spec => spec;
+        public bool IsJuiced => juiced;
         public int TypedCount => typedCount;
         public float DistanceRemaining01 => 1f - Progress;
         public float Progress => PitchTrajectory.Progress(spec.Kind, NormalizedTime);
@@ -37,13 +40,14 @@ namespace BaseballTyping
 
         private float NormalizedTime => Mathf.Clamp01(elapsed / spec.TravelSeconds);
 
-        public void Initialize(BaseballGame owner, PitchSpec pitchSpec, string pitchWord, float lane)
+        public void Initialize(BaseballGame owner, PitchSpec pitchSpec, string pitchWord, float lane, bool isJuiced = false)
         {
             game = owner;
             spec = pitchSpec;
             word = pitchWord.ToLowerInvariant();
             laneY = Ballpark.ClampLane(lane);
             seed = Random.Range(0f, 100f);
+            juiced = isJuiced;
 
             if (spec.Kind == PitchKind.FlamingKnuckleball)
             {
@@ -73,6 +77,17 @@ namespace BaseballTyping
             ball.sprite = KenneyArt.Sprite(KenneyArt.Props.Baseball);
             ball.sortingOrder = Ballpark.Layer.Ball;
             ball.color = spec.BallColor;
+
+            if (juiced)
+            {
+                var auraObject = new GameObject("Aura");
+                auraObject.transform.SetParent(transform, false);
+                aura = auraObject.AddComponent<SpriteRenderer>();
+                aura.sprite = KenneyArt.Sprite(KenneyArt.Props.Baseball);
+                aura.sortingOrder = Ballpark.Layer.Ball - 1;
+                aura.color = new Color(1f, 0.95f, 0.35f, 0.55f);
+                aura.transform.localScale = Vector3.one * 1.65f;
+            }
 
             UpdateTransform();
         }
@@ -109,6 +124,13 @@ namespace BaseballTyping
                 flame.transform.localRotation = Quaternion.Euler(0f, 0f, elapsed * 300f);
                 float pulse = 1.3f + Mathf.Sin(elapsed * 14f) * 0.18f;
                 flame.transform.localScale = Vector3.one * pulse;
+            }
+
+            if (aura != null)
+            {
+                float glow = 1.55f + Mathf.Sin(elapsed * 10f) * 0.18f;
+                aura.transform.localScale = Vector3.one * glow;
+                aura.color = new Color(1f, 0.94f, 0.4f, 0.38f + Mathf.Sin(elapsed * 12f) * 0.16f);
             }
         }
 

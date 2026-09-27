@@ -1,6 +1,6 @@
 # Baseball Typing League
 
-A 60-second baseball typing game built with Unity and C#. Type the word attached to each incoming pitch before it crosses home plate. The same project builds for Windows and WebGL.
+A baseball typing game built with Unity and C#. Type the word attached to each incoming pitch before it crosses home plate. Score enough to start a boss inning. The same project builds for Windows and WebGL.
 
 ## Gameplay
 
@@ -11,9 +11,24 @@ A 60-second baseball typing game built with Unity and C#. Type the word attached
 - Every early hit receives up to 100 distance-bonus points.
 - Five consecutive typo-free hits increase the multiplier, up to 3x.
 - A typo resets the combo. Backspace corrects the current input.
-- Three missed pitches cause a two-second strikeout stun while the clock keeps running.
+- **Check Swing:** press **1** or **ESC** to clear typed letters on the locked pitch.
+- Three missed pitches strike you out and end the run.
 
 When several pitches are active, the first typed letter locks onto the closest matching pitch. Complete words are case-insensitive.
+
+## Levels and boss
+
+There is no round timer. Difficulty rises with the level. Hitting **1,000 / 2,500 / 4,500 / 7,000** points (then +3,000) retracts the pitching machine and fires a **Juggernaut Pitch**: a huge slow ball with a health bar. Type the word stream under it. Each correct letter chips HP. Drain it for a Grand Slam and the next level. If it reaches the plate, the game ends.
+
+## Juiced pitches
+
+About one in ten pitches glows. Hitting one grants a power-up:
+
+- **Rosin Bag** — chalk dust and 5 seconds of slow motion
+- **Corked Bat** — 10 seconds; the last two letters of each word fill in
+- **Golden Glove** — absorbs the next missed pitch
+- **Double Play** — also hits 2-3 other balls on screen
+- **Base Stealer** — a frenzy of 2-letter words
 
 ## Requirements
 
@@ -30,7 +45,7 @@ Unity will generate `Library`, solution, and project files the first time it ope
 
 1. Open `Assets/Scenes/Main.unity`.
 2. Press the Unity **Play** button.
-3. Click **PLAY 60-SECOND GAME**.
+3. Click **PLAY BALL**.
 4. Type with the physical keyboard. No input box needs focus.
 
 To add sounds, place clips at `Assets/Resources/Audio/` named `Pitch`, `Hit`, `HomeRun`, `Strike`, and `Foul` (with any Unity-supported audio extension). Missing clips are handled silently.

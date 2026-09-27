@@ -25,31 +25,47 @@ namespace BaseballTyping
         private GameObject hudPanel;
         private GameObject inputBar;
         private GameObject resultsPanel;
+        private GameObject bossHud;
         private Text timerText;
         private Text scoreText;
         private Text comboText;
+        private Text powerText;
         private Text inputText;
         private Text bannerText;
         private Text resultText;
         private Text finalScoreText;
         private Text volumeText;
+        private Text bossWordText;
+        private Text bossPreviewText;
         private Image[] strikeDots;
+        private Image chalkOverlay;
+        private Image bossHpFill;
         private RectTransform comboFill;
+        private RectTransform bossWordRect;
+        private RectTransform bossHpRect;
 
         private RoundState state = RoundState.Menu;
         private PitchController lockedPitch;
+        private JuggernautPitch juggernaut;
+        private JuggernautStream juggernautStream;
         private string currentInput = string.Empty;
-        private float timeRemaining;
         private float countdownRemaining;
         private float stunRemaining;
         private float spawnRemaining;
         private float transientBannerRemaining;
         private float shakeRemaining;
+        private float corkedRemaining;
+        private float rosinRemaining;
+        private float frenzyRemaining;
         private int strikes;
         private int pitchesHit;
         private int homeRuns;
+        private int level = 1;
+        private bool goldenGlove;
+        private bool awaitingBoss;
 
-        public bool PitchesMove => state == RoundState.Playing || state == RoundState.Stunned;
+        public bool PitchesMove =>
+            state == RoundState.Playing || state == RoundState.Stunned || state == RoundState.Boss;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CreateGame()
@@ -73,14 +89,20 @@ namespace BaseballTyping
             ShowMenu();
         }
 
+        private void OnDestroy()
+        {
+            RestoreTimeScale();
+        }
+
         private void Update()
         {
             UpdateCameraShake();
+            TickPowerUps(Time.unscaledDeltaTime);
 
             if (transientBannerRemaining > 0f)
             {
-                transientBannerRemaining -= Time.deltaTime;
-                if (transientBannerRemaining <= 0f && state == RoundState.Playing)
+                transientBannerRemaining -= Time.unscaledDeltaTime;
+                if (transientBannerRemaining <= 0f && (state == RoundState.Playing || state == RoundState.Boss))
                 {
                     bannerText.text = string.Empty;
                 }
@@ -92,32 +114,45 @@ namespace BaseballTyping
                 return;
             }
 
-            if (state != RoundState.Playing && state != RoundState.Stunned) return;
-
-            timeRemaining = Mathf.Max(0f, timeRemaining - Time.deltaTime);
-            if (timeRemaining <= 0f)
+            if (state == RoundState.Boss)
             {
-                EndRound();
+                ProcessTyping();
+                UpdateBatterAnticipation();
+                RefreshHud();
                 return;
             }
 
+            if (state != RoundState.Playing && state != RoundState.Stunned) return;
+
             if (state == RoundState.Stunned)
             {
-                stunRemaining -= Time.deltaTime;
-                bannerText.text = "STRIKEOUT!\nback in " + Mathf.Max(0f, stunRemaining).ToString("0.0") + "s";
+                stunRemaining -= Time.unscaledDeltaTime;
+                bannerText.text = "STRIKEOUT!\n" + Mathf.Max(0f, stunRemaining).ToString("0.0") + "s";
                 if (stunRemaining <= 0f)
                 {
-                    strikes = 0;
-                    state = RoundState.Playing;
-                    ShowBanner("PLAY BALL!", 0.7f);
+                    EndRound();
+                    return;
                 }
             }
             else
             {
-                spawnRemaining -= Time.deltaTime;
-                if (spawnRemaining <= 0f && activePitches.Count < GameRules.MaxActivePitches)
+                if (!awaitingBoss && frenzyRemaining <= 0f && score.Score >= GameRules.BossThreshold(level))
                 {
-                    SpawnPitch();
+                    BeginApproachToBoss();
+                }
+
+                if (awaitingBoss)
+                {
+                    if (activePitches.Count == 0)
+                    {
+                        BeginBoss();
+                        RefreshHud();
+                        return;
+                    }
+                }
+                else
+                {
+                    TrySpawn();
                 }
 
                 ProcessTyping();
@@ -127,9 +162,28 @@ namespace BaseballTyping
             RefreshHud();
         }
 
+        private void LateUpdate()
+        {
+            RefreshBossHudFollow();
+        }
+
+        private void TrySpawn()
+        {
+            if (awaitingBoss || state != RoundState.Playing) return;
+
+            spawnRemaining -= Time.deltaTime;
+            int cap = frenzyRemaining > 0f
+                ? GameRules.MaxActivePitches(level) + 2
+                : GameRules.MaxActivePitches(level);
+            if (spawnRemaining <= 0f && activePitches.Count < cap)
+            {
+                SpawnPitch();
+            }
+        }
+
         private void UpdateCountdown()
         {
-            countdownRemaining -= Time.deltaTime;
+            countdownRemaining -= Time.unscaledDeltaTime;
             bannerText.text = countdownRemaining > 0f
                 ? Mathf.CeilToInt(countdownRemaining).ToString()
                 : "PLAY BALL!";
@@ -147,37 +201,67 @@ namespace BaseballTyping
         {
             if (!activePitches.Remove(pitch)) return;
 
+            Vector3 ballPosition = pitch.transform.position;
             if (lockedPitch == pitch) ClearTypingTarget();
             wordLabels.Release(pitch);
-            SpawnBurst(pitch.transform.position, new Color(0.85f, 0.3f, 0.25f), 6);
+            SpawnBurst(ballPosition, new Color(0.85f, 0.3f, 0.25f), 6);
             Destroy(pitch.gameObject);
 
             if (state != RoundState.Playing) return;
+
+            if (goldenGlove)
+            {
+                goldenGlove = false;
+                audioHub.PlayHit(false);
+                ShowBanner("GOLDEN GLOVE!  shield used", 0.9f);
+                RefreshHud();
+                return;
+            }
 
             strikes++;
             audioHub.PlayStrike();
             ShowBanner("STRIKE " + strikes + "!", 0.7f);
 
-            if (strikes >= GameRules.StrikesForOut)
+            bool strikeout = strikes >= GameRules.StrikesForOut;
+            batter.SwingAt(ballPosition, strikeout);
+
+            if (strikeout)
             {
                 state = RoundState.Stunned;
                 stunRemaining = GameRules.StrikeoutSeconds;
                 currentInput = string.Empty;
                 lockedPitch = null;
-                batter.Strikeout(GameRules.StrikeoutSeconds);
             }
 
             RefreshHud();
         }
 
+        public void RegisterJuggernautCrash()
+        {
+            if (state != RoundState.Boss) return;
+            CleanupJuggernaut();
+            strikes = GameRules.StrikesForOut;
+            batter.SwingAt(new Vector3(Ballpark.PlateX, 0.2f, 0f), true);
+            audioHub.PlayStrike();
+            ShowBanner("JUGGERNAUT SCORES!", 1.2f);
+            EndRound();
+        }
+
         private void StartRound()
         {
+            RestoreTimeScale();
             ClearAllPitches();
+            CleanupJuggernaut();
             score.Reset();
             strikes = 0;
             pitchesHit = 0;
             homeRuns = 0;
-            timeRemaining = GameRules.RoundSeconds;
+            level = 1;
+            awaitingBoss = false;
+            goldenGlove = false;
+            corkedRemaining = 0f;
+            rosinRemaining = 0f;
+            frenzyRemaining = 0f;
             countdownRemaining = 3f;
             stunRemaining = 0f;
             transientBannerRemaining = 0f;
@@ -185,11 +269,13 @@ namespace BaseballTyping
             lockedPitch = null;
             state = RoundState.Countdown;
 
+            machine.Restore();
             batter.ResetPose();
             menuPanel.SetActive(false);
             resultsPanel.SetActive(false);
             hudPanel.SetActive(true);
             inputBar.SetActive(true);
+            bossHud.SetActive(false);
             bannerText.text = "3";
             inputText.text = "get ready...";
             RefreshHud();
@@ -197,12 +283,16 @@ namespace BaseballTyping
 
         private void EndRound()
         {
+            RestoreTimeScale();
             state = RoundState.GameOver;
             ClearAllPitches();
+            CleanupJuggernaut();
+            machine.Restore();
             batter.ResetPose();
             bannerText.text = string.Empty;
             hudPanel.SetActive(false);
             inputBar.SetActive(false);
+            bossHud.SetActive(false);
 
             int best = Mathf.Max(score.Score, PlayerPrefs.GetInt("BaseballTyping.BestScore", 0));
             PlayerPrefs.SetInt("BaseballTyping.BestScore", best);
@@ -210,6 +300,7 @@ namespace BaseballTyping
 
             finalScoreText.text = score.Score.ToString("N0");
             resultText.text =
+                "level  " + level + "\n" +
                 "hits  " + pitchesHit + "\n" +
                 "home runs  " + homeRuns + "\n" +
                 "best  " + best.ToString("N0");
@@ -218,38 +309,111 @@ namespace BaseballTyping
 
         private void ShowMenu()
         {
+            RestoreTimeScale();
             state = RoundState.Menu;
             ClearAllPitches();
+            CleanupJuggernaut();
+            machine.Restore();
             batter.ResetPose();
             hudPanel.SetActive(false);
             inputBar.SetActive(false);
             resultsPanel.SetActive(false);
+            bossHud.SetActive(false);
             menuPanel.SetActive(true);
             bannerText.text = string.Empty;
             UpdateVolumeLabel();
         }
 
+        private void BeginApproachToBoss()
+        {
+            awaitingBoss = true;
+            frenzyRemaining = 0f;
+            machine.Retract();
+            ShowBanner("BULLPEN CLEARING...", 1.1f);
+        }
+
+        private void BeginBoss()
+        {
+            awaitingBoss = false;
+            ClearAllPitches();
+            ClearPowerUpsKeepingGlove();
+            state = RoundState.Boss;
+            machine.Retract();
+            juggernautStream = new JuggernautStream(WordBank.BuildJuggernautWords(GameRules.JuggernautLetterTarget(level)));
+
+            var go = new GameObject("Juggernaut");
+            go.transform.SetParent(pitchRoot, false);
+            juggernaut = go.AddComponent<JuggernautPitch>();
+            juggernaut.Initialize(this, GameRules.JuggernautTravelSeconds);
+            machine.Restore();
+            machine.Fire();
+            machine.Retract();
+            audioHub.PlayPitch();
+            shakeRemaining = 0.4f;
+            bossHud.SetActive(true);
+            currentInput = string.Empty;
+            lockedPitch = null;
+            ShowBanner("JUGGERNAUT PITCH!", 1.3f);
+            RefreshBossPrompt();
+        }
+
+        private void WinBoss()
+        {
+            Vector3 from = juggernaut != null ? juggernaut.transform.position : Vector3.zero;
+            int bonus = score.AddBonus(GameRules.GrandSlamPoints(level));
+            homeRuns++;
+            pitchesHit++;
+            batter.SwingAt(from);
+            audioHub.PlayHit(true);
+            SpawnBurst(from, new Color(1f, 0.84f, 0.2f), 16);
+            LaunchHitBall(from, true);
+            shakeRemaining = 0.45f;
+            CleanupJuggernaut();
+            ClearAllPitches();
+
+            level++;
+            strikes = 0;
+            awaitingBoss = false;
+            machine.Restore();
+            state = RoundState.Playing;
+            spawnRemaining = 1.35f;
+            bossHud.SetActive(false);
+            ShowBanner("GRAND SLAM!  +" + bonus.ToString("N0"), 1.4f);
+            ClearTypingTarget();
+
+            if (score.Score >= GameRules.BossThreshold(level))
+            {
+                BeginApproachToBoss();
+            }
+        }
+
         private void SpawnPitch()
         {
-            float difficulty = 1f - timeRemaining / GameRules.RoundSeconds;
-            PitchKind kind = ChoosePitchKind(difficulty);
-            PitchSpec spec = GameRules.SpecFor(kind, difficulty);
-            string word = WordBank.RandomWord(kind);
+            float difficulty = GameRules.DifficultyForLevel(level);
+            bool frenzy = frenzyRemaining > 0f;
+            PitchKind kind = frenzy ? PitchKind.Fastball : ChoosePitchKind(difficulty);
+            PitchSpec spec = frenzy
+                ? new PitchSpec(PitchKind.Fastball, 2.15f, 80, new Color(0.75f, 1f, 0.7f))
+                : GameRules.SpecFor(kind, difficulty);
+            string word = frenzy ? WordBank.RandomStealerWord() : WordBank.RandomWord(kind);
+            bool juiced = !frenzy && GameRules.ShouldJuice(Random.value);
             float lane = Random.Range(Ballpark.LaneMinY, Ballpark.LaneMaxY);
 
             var go = new GameObject(kind + "_" + word);
             go.transform.SetParent(pitchRoot, false);
             var pitch = go.AddComponent<PitchController>();
-            pitch.Initialize(this, spec, word, lane);
+            pitch.Initialize(this, spec, word, lane, juiced);
 
             activePitches.Add(pitch);
             wordLabels.Track(pitch);
             machine.Fire();
             audioHub.PlayPitch();
 
-            spawnRemaining = Random.Range(
-                Mathf.Lerp(1.65f, 0.68f, difficulty),
-                Mathf.Lerp(2.15f, 1.05f, difficulty));
+            spawnRemaining = frenzy
+                ? Random.Range(0.28f, 0.48f)
+                : Random.Range(
+                    Mathf.Lerp(1.65f, 0.68f, difficulty),
+                    Mathf.Lerp(2.15f, 1.05f, difficulty));
         }
 
         private static PitchKind ChoosePitchKind(float difficulty)
@@ -264,7 +428,7 @@ namespace BaseballTyping
 
         private void UpdateBatterAnticipation()
         {
-            bool incoming = false;
+            bool incoming = state == RoundState.Boss;
             for (int i = 0; i < activePitches.Count; i++)
             {
                 if (activePitches[i].Progress > 0.55f)
@@ -279,6 +443,12 @@ namespace BaseballTyping
 
         private void ProcessTyping()
         {
+            if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1) || Input.GetKeyDown(KeyCode.Escape))
+            {
+                CheckSwing();
+                return;
+            }
+
             string input = Input.inputString;
             bool inputIncludedBackspace = false;
 
@@ -291,7 +461,8 @@ namespace BaseballTyping
                 }
                 else if (char.IsLetter(raw))
                 {
-                    TypeCharacter(char.ToLowerInvariant(raw));
+                    if (state == RoundState.Boss) TypeBossCharacter(char.ToLowerInvariant(raw));
+                    else TypeCharacter(char.ToLowerInvariant(raw));
                 }
             }
 
@@ -299,6 +470,22 @@ namespace BaseballTyping
             {
                 Backspace();
             }
+        }
+
+        private void CheckSwing()
+        {
+            if (state == RoundState.Boss && juggernautStream != null)
+            {
+                juggernautStream.CheckSwing();
+                currentInput = string.Empty;
+                RefreshBossPrompt();
+                ShowBanner("CHECK SWING", 0.35f);
+                return;
+            }
+
+            if (lockedPitch != null) lockedPitch.SetTypedPrefix(0);
+            ClearTypingTarget();
+            ShowBanner("CHECK SWING", 0.35f);
         }
 
         private void TypeCharacter(char character)
@@ -325,6 +512,12 @@ namespace BaseballTyping
             }
 
             lockedPitch.SetTypedPrefix(currentInput.Length);
+            if (GameRules.CorkedCompletes(lockedPitch.Word, currentInput, corkedRemaining > 0f))
+            {
+                currentInput = lockedPitch.Word;
+                lockedPitch.SetTypedPrefix(currentInput.Length);
+            }
+
             inputText.text = "<color=#7CFF9B>" + currentInput + "</color>" +
                              lockedPitch.Word.Substring(currentInput.Length);
 
@@ -334,8 +527,51 @@ namespace BaseballTyping
             }
         }
 
+        private void TypeBossCharacter(char character)
+        {
+            if (juggernautStream == null || juggernautStream.Complete) return;
+
+            string wordBefore = juggernautStream.CurrentWord;
+            bool ok = juggernautStream.TypeLetter(character);
+            if (!ok)
+            {
+                score.RegisterTypo();
+                audioHub.PlayFoul();
+                ShowBanner("FOUL! combo reset", 0.6f);
+                RefreshBossPrompt();
+                RefreshHud();
+                return;
+            }
+
+            if (corkedRemaining > 0f &&
+                GameRules.CorkedCompletes(wordBefore, juggernautStream.Typed, true) &&
+                juggernautStream.CurrentWord == wordBefore)
+            {
+                while (!juggernautStream.Complete &&
+                       juggernautStream.CurrentWord == wordBefore &&
+                       juggernautStream.Typed.Length < wordBefore.Length)
+                {
+                    juggernautStream.TypeLetter(wordBefore[juggernautStream.Typed.Length]);
+                }
+            }
+
+            RefreshBossPrompt();
+            if (juggernautStream.Complete)
+            {
+                WinBoss();
+            }
+        }
+
         private void Backspace()
         {
+            if (state == RoundState.Boss && juggernautStream != null)
+            {
+                juggernautStream.CheckSwing();
+                currentInput = string.Empty;
+                RefreshBossPrompt();
+                return;
+            }
+
             if (currentInput.Length == 0) return;
             currentInput = currentInput.Substring(0, currentInput.Length - 1);
 
@@ -345,7 +581,7 @@ namespace BaseballTyping
                 return;
             }
 
-            int validCount = ValidPrefixLength(lockedPitch.Word, currentInput);
+            int validCount = JuggernautStream.ValidPrefixLength(lockedPitch.Word, currentInput);
             lockedPitch.SetTypedPrefix(validCount);
             inputText.text = lockedPitch.Word.StartsWith(currentInput)
                 ? "<color=#7CFF9B>" + currentInput + "</color>" + lockedPitch.Word.Substring(currentInput.Length)
@@ -368,20 +604,30 @@ namespace BaseballTyping
 
         private void RegisterHit(PitchController pitch)
         {
+            bool juiced = pitch.IsJuiced;
+            Vector3 hitFrom = pitch.transform.position;
+            PitchSpec spec = pitch.Spec;
+            float distance = pitch.DistanceRemaining01;
+            bool homeRun = pitch.Kind == PitchKind.FlamingKnuckleball;
+
             pitch.MarkResolved();
             activePitches.Remove(pitch);
             wordLabels.Release(pitch);
 
-            int points = score.RegisterHit(pitch.Spec, pitch.DistanceRemaining01);
-            bool homeRun = pitch.Kind == PitchKind.FlamingKnuckleball;
+            int points = score.RegisterHit(spec, distance);
             pitchesHit++;
             if (homeRun) homeRuns++;
 
-            batter.Swing();
+            batter.SwingAt(hitFrom);
             audioHub.PlayHit(homeRun);
-            SpawnBurst(pitch.transform.position, homeRun ? new Color(1f, 0.55f, 0.15f) : Color.white, homeRun ? 14 : 8);
-            LaunchHitBall(pitch.transform.position, homeRun);
+            SpawnBurst(hitFrom, homeRun ? new Color(1f, 0.55f, 0.15f) : Color.white, homeRun ? 14 : 8);
+            LaunchHitBall(hitFrom, homeRun);
             Destroy(pitch.gameObject);
+
+            if (juiced)
+            {
+                GrantRandomPowerUp(hitFrom);
+            }
 
             if (homeRun)
             {
@@ -391,12 +637,68 @@ namespace BaseballTyping
             }
             else
             {
-                string result = pitch.DistanceRemaining01 > 0.55f ? "DOUBLE!" : "SINGLE!";
+                string result = distance > 0.55f ? "DOUBLE!" : "SINGLE!";
                 ShowBanner(result + "  +" + points.ToString("N0"), 0.7f);
                 ClearTypingTarget();
             }
 
             RefreshHud();
+        }
+
+        private void GrantRandomPowerUp(Vector3 from)
+        {
+            var kind = (PowerUpKind)Random.Range(0, 5);
+            switch (kind)
+            {
+                case PowerUpKind.RosinBag:
+                    rosinRemaining = GameRules.RosinDuration;
+                    Time.timeScale = GameRules.RosinTimeScale;
+                    ShowBanner(PowerUpNames.Display(kind) + "  time slow", 1.1f);
+                    break;
+                case PowerUpKind.CorkedBat:
+                    corkedRemaining = GameRules.CorkedDuration;
+                    ShowBanner(PowerUpNames.Display(kind) + "  auto-complete", 1.1f);
+                    break;
+                case PowerUpKind.GoldenGlove:
+                    goldenGlove = true;
+                    ShowBanner(PowerUpNames.Display(kind) + "  shield ready", 1.1f);
+                    break;
+                case PowerUpKind.DoublePlay:
+                    ResolveDoublePlay(from);
+                    ShowBanner(PowerUpNames.Display(kind) + "!", 1.1f);
+                    break;
+                default:
+                    frenzyRemaining = GameRules.FrenzyDuration;
+                    spawnRemaining = 0.05f;
+                    ShowBanner(PowerUpNames.Display(PowerUpKind.BaseStealer) + "  frenzy!", 1.1f);
+                    break;
+            }
+        }
+
+        private void ResolveDoublePlay(Vector3 from)
+        {
+            int extras = Random.Range(2, 4);
+            var victims = new List<PitchController>();
+            for (int i = 0; i < activePitches.Count && victims.Count < extras; i++)
+            {
+                victims.Add(activePitches[i]);
+            }
+
+            LaunchHitBall(from, false);
+            for (int i = 0; i < victims.Count; i++)
+            {
+                PitchController extra = victims[i];
+                if (extra == null) continue;
+                extra.MarkResolved();
+                activePitches.Remove(extra);
+                wordLabels.Release(extra);
+                int extraPoints = score.RegisterHit(extra.Spec, extra.DistanceRemaining01);
+                pitchesHit++;
+                SpawnBurst(extra.transform.position, new Color(0.7f, 1f, 0.75f), 8);
+                LaunchHitBall(extra.transform.position, false);
+                Destroy(extra.gameObject);
+                ShowBanner("DOUBLE PLAY  +" + extraPoints.ToString("N0"), 0.8f);
+            }
         }
 
         private void RegisterFoul(string typed)
@@ -412,7 +714,7 @@ namespace BaseballTyping
         {
             lockedPitch = null;
             currentInput = string.Empty;
-            inputText.text = "type a word";
+            if (inputText != null) inputText.text = "type a word";
         }
 
         private void ClearAllPitches()
@@ -430,13 +732,76 @@ namespace BaseballTyping
             ClearTypingTarget();
         }
 
+        private void CleanupJuggernaut()
+        {
+            if (juggernaut != null)
+            {
+                juggernaut.MarkResolved();
+                Destroy(juggernaut.gameObject);
+                juggernaut = null;
+            }
+
+            juggernautStream = null;
+        }
+
+        private void TickPowerUps(float unscaledDt)
+        {
+            if (corkedRemaining > 0f)
+            {
+                corkedRemaining = Mathf.Max(0f, corkedRemaining - unscaledDt);
+            }
+
+            if (rosinRemaining > 0f)
+            {
+                rosinRemaining = Mathf.Max(0f, rosinRemaining - unscaledDt);
+                if (rosinRemaining <= 0f) RestoreTimeScale();
+            }
+
+            if (frenzyRemaining > 0f)
+            {
+                frenzyRemaining = Mathf.Max(0f, frenzyRemaining - unscaledDt);
+            }
+
+            if (chalkOverlay != null)
+            {
+                float target = rosinRemaining > 0f ? 0.22f : 0f;
+                Color color = chalkOverlay.color;
+                color.a = Mathf.MoveTowards(color.a, target, unscaledDt * 1.4f);
+                chalkOverlay.color = color;
+            }
+        }
+
+        private void ClearPowerUpsKeepingGlove()
+        {
+            corkedRemaining = 0f;
+            frenzyRemaining = 0f;
+            rosinRemaining = 0f;
+            RestoreTimeScale();
+        }
+
+        private void RestoreTimeScale()
+        {
+            Time.timeScale = 1f;
+            rosinRemaining = 0f;
+        }
+
         private void RefreshHud()
         {
             if (timerText == null) return;
 
-            timerText.text = "TIME " + Mathf.CeilToInt(timeRemaining).ToString("00");
+            if (state == RoundState.Boss)
+            {
+                timerText.text = "BOSS";
+            }
+            else
+            {
+                int remain = GameRules.PointsToBoss(score.Score, level);
+                timerText.text = "LV " + level + "\n" + remain;
+            }
+
             scoreText.text = score.Score.ToString("N0");
             comboText.text = "x" + score.Multiplier.ToString("0.0");
+            if (powerText != null) powerText.text = PowerStatusText();
 
             for (int i = 0; i < strikeDots.Length; i++)
             {
@@ -448,6 +813,64 @@ namespace BaseballTyping
             float progressToNextTier = (score.ErrorFreeHits % 5) / 5f;
             if (score.Multiplier >= 3f) progressToNextTier = 1f;
             comboFill.anchorMax = new Vector2(Mathf.Clamp01(progressToNextTier), 1f);
+
+            if (bossHud != null && juggernautStream != null && state == RoundState.Boss)
+            {
+                float hp = juggernautStream.MaxHp <= 0 ? 0f : (float)juggernautStream.Hp / juggernautStream.MaxHp;
+                bossHpFill.rectTransform.anchorMax = new Vector2(Mathf.Clamp01(hp), 1f);
+            }
+        }
+
+        private string PowerStatusText()
+        {
+            if (rosinRemaining > 0f) return "ROSIN " + rosinRemaining.ToString("0.0");
+            if (corkedRemaining > 0f) return "CORKED " + corkedRemaining.ToString("0.0");
+            if (frenzyRemaining > 0f) return "FRENZY " + frenzyRemaining.ToString("0.0");
+            if (goldenGlove) return "GLOVE READY";
+            return string.Empty;
+        }
+
+        private void RefreshBossPrompt()
+        {
+            if (juggernautStream == null || bossWordText == null) return;
+
+            string word = juggernautStream.CurrentWord;
+            string typed = juggernautStream.Typed;
+            int valid = JuggernautStream.ValidPrefixLength(word, typed);
+            if (valid > 0 && valid == typed.Length)
+            {
+                bossWordText.text = "<color=#7CFF9B>" + typed + "</color>" + word.Substring(typed.Length);
+            }
+            else if (typed.Length > 0)
+            {
+                bossWordText.text = "<color=#FF7B6B>" + typed + "</color>";
+            }
+            else
+            {
+                bossWordText.text = word;
+            }
+
+            bossPreviewText.text = juggernautStream.Preview;
+            inputText.text = bossWordText.text;
+        }
+
+        private void RefreshBossHudFollow()
+        {
+            if (state != RoundState.Boss || juggernaut == null || canvas == null) return;
+
+            RectTransform canvasRect = canvas.GetComponent<RectTransform>();
+            PlaceUiAtWorld(bossWordRect, canvasRect, juggernaut.LabelAnchor);
+            PlaceUiAtWorld(bossHpRect, canvasRect, juggernaut.HpAnchor);
+        }
+
+        private void PlaceUiAtWorld(RectTransform rect, RectTransform canvasRect, Vector3 world)
+        {
+            if (rect == null) return;
+            Vector2 screenPoint = pixelCamera.WorldToScreenPoint(world);
+            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(canvasRect, screenPoint, null, out Vector2 local))
+            {
+                rect.anchoredPosition = local;
+            }
         }
 
         private void ShowBanner(string message, float seconds)
@@ -464,7 +887,7 @@ namespace BaseballTyping
                 return;
             }
 
-            shakeRemaining -= Time.deltaTime;
+            shakeRemaining -= Time.unscaledDeltaTime;
             float magnitude = Mathf.Max(0f, shakeRemaining) * 0.35f;
             pixelCamera.transform.position = new Vector3(
                 Random.Range(-magnitude, magnitude),
@@ -492,10 +915,11 @@ namespace BaseballTyping
             float life = 0f;
             while (life < 1.2f)
             {
-                life += Time.deltaTime;
-                velocity.y -= 9f * Time.deltaTime;
-                go.transform.position += velocity * Time.deltaTime;
-                go.transform.Rotate(0f, 0f, -720f * Time.deltaTime);
+                life += Time.unscaledDeltaTime;
+                float dt = Time.unscaledDeltaTime;
+                velocity.y -= 9f * dt;
+                go.transform.position += velocity * dt;
+                go.transform.Rotate(0f, 0f, -720f * dt);
                 if (go.transform.position.x > 12f) break;
                 yield return null;
             }
@@ -534,7 +958,7 @@ namespace BaseballTyping
             const float duration = 0.42f;
             while (elapsed < duration)
             {
-                elapsed += Time.deltaTime;
+                elapsed += Time.unscaledDeltaTime;
                 float t = elapsed / duration;
                 for (int i = 0; i < count; i++)
                 {
@@ -553,14 +977,6 @@ namespace BaseballTyping
             }
         }
 
-        private static int ValidPrefixLength(string word, string typed)
-        {
-            int max = Mathf.Min(word.Length, typed.Length);
-            int index = 0;
-            while (index < max && word[index] == typed[index]) index++;
-            return index;
-        }
-
         private void BuildWorld()
         {
             pixelCamera = PixelCamera.Create(SkyColor);
@@ -577,7 +993,12 @@ namespace BaseballTyping
             canvas = PixelUi.CreateCanvas();
             wordLabels = WordLabelLayer.Build(canvas.transform, pixelCamera);
 
+            chalkOverlay = PixelUi.Region(canvas.transform, "Chalk", Vector2.zero, Vector2.one).gameObject.AddComponent<Image>();
+            chalkOverlay.color = new Color(0.95f, 0.95f, 0.9f, 0f);
+            chalkOverlay.raycastTarget = false;
+
             BuildHud();
+            BuildBossHud();
             BuildMenu();
             BuildResults();
 
@@ -591,9 +1012,8 @@ namespace BaseballTyping
             hudPanel = PixelUi.Panel(canvas.transform, "HUD", KenneyArt.Ui.PanelBolted,
                 new Vector2(0.012f, 0.855f), new Vector2(0.988f, 0.988f)).gameObject;
 
-            // Each HUD block owns an anchored region so nothing overlaps at any aspect ratio.
             var timeRegion = PixelUi.Region(hudPanel.transform, "TimeRegion", new Vector2(0.025f, 0.12f), new Vector2(0.2f, 0.88f));
-            timerText = PixelUi.ShadowLabel(timeRegion, "Timer", "TIME 60", 26, new Color(1f, 0.98f, 0.9f),
+            timerText = PixelUi.ShadowLabel(timeRegion, "Timer", "LV 1", 22, new Color(1f, 0.98f, 0.9f),
                 TextAnchor.MiddleLeft, Vector2.zero, Vector2.one);
 
             var scorePlate = PixelUi.Panel(hudPanel.transform, "ScorePlate", KenneyArt.Ui.PanelDark,
@@ -626,6 +1046,38 @@ namespace BaseballTyping
                 new Vector2(0.24f, 0.028f), new Vector2(0.76f, 0.13f)).gameObject;
             inputText = PixelUi.ShadowLabel(inputBar.transform, "CurrentInput", "type a word", 28, Color.white,
                 TextAnchor.MiddleCenter, new Vector2(0.04f, 0f), new Vector2(0.96f, 1f));
+
+            powerText = PixelUi.ShadowLabel(canvas.transform, "PowerUp", string.Empty, 18, new Color(1f, 0.92f, 0.55f),
+                TextAnchor.MiddleLeft, new Vector2(0.02f, 0.04f), new Vector2(0.22f, 0.12f));
+        }
+
+        private void BuildBossHud()
+        {
+            bossHud = PixelUi.Region(canvas.transform, "BossHud", Vector2.zero, Vector2.one).gameObject;
+            bossHud.SetActive(false);
+
+            var hpRoot = new GameObject("BossHp", typeof(RectTransform));
+            hpRoot.transform.SetParent(bossHud.transform, false);
+            bossHpRect = hpRoot.GetComponent<RectTransform>();
+            bossHpRect.anchorMin = bossHpRect.anchorMax = new Vector2(0.5f, 0.5f);
+            bossHpRect.sizeDelta = new Vector2(220f, 28f);
+
+            var hpFrame = PixelUi.Panel(hpRoot.transform, "HpFrame", KenneyArt.Ui.BarFrame, Vector2.zero, Vector2.one);
+            bossHpFill = PixelUi.Panel(hpFrame.transform, "HpFill", KenneyArt.Ui.BarFill, Vector2.zero, Vector2.one);
+            bossHpFill.color = new Color(0.85f, 0.18f, 0.16f);
+            bossHpFill.rectTransform.offsetMin = new Vector2(6f, 6f);
+            bossHpFill.rectTransform.offsetMax = new Vector2(-6f, -6f);
+
+            var wordRoot = new GameObject("BossWord", typeof(RectTransform));
+            wordRoot.transform.SetParent(bossHud.transform, false);
+            bossWordRect = wordRoot.GetComponent<RectTransform>();
+            bossWordRect.anchorMin = bossWordRect.anchorMax = new Vector2(0.5f, 0.5f);
+            bossWordRect.sizeDelta = new Vector2(520f, 70f);
+
+            bossWordText = PixelUi.ShadowLabel(wordRoot.transform, "Word", string.Empty, 32, Color.white,
+                TextAnchor.MiddleCenter, new Vector2(0f, 0.35f), new Vector2(1f, 1f));
+            bossPreviewText = PixelUi.Label(wordRoot.transform, "Preview", string.Empty, 18, new Color(0.85f, 0.85f, 0.8f),
+                TextAnchor.MiddleCenter, new Vector2(0f, 0f), new Vector2(1f, 0.4f));
         }
 
         private void BuildMenu()
@@ -635,31 +1087,33 @@ namespace BaseballTyping
             scrim.color = new Color(0.04f, 0.06f, 0.1f, 0.42f);
 
             var card = PixelUi.Panel(menuPanel.transform, "Card", KenneyArt.Ui.PanelCream,
-                new Vector2(0.2f, 0.12f), new Vector2(0.8f, 0.9f));
+                new Vector2(0.16f, 0.08f), new Vector2(0.84f, 0.93f));
 
             var titleBanner = PixelUi.Sprite(card.transform, "TitleBanner", KenneyArt.Ui.Banner,
-                new Vector2(0f, 168f), new Vector2(470f, 116f), false);
+                new Vector2(0f, 188f), new Vector2(470f, 116f), false);
             PixelUi.ShadowLabel(titleBanner.transform, "Title", "BASEBALL\nTYPING LEAGUE", 26, new Color(1f, 0.97f, 0.88f),
                 TextAnchor.MiddleCenter, new Vector2(0.06f, 0.08f), new Vector2(0.94f, 0.92f), true);
 
             PixelUi.Label(card.transform, "Instructions",
-                "type each pitch's word before it\nreaches home plate\n\n" +
-                "fastball short   curveball hides a letter\nchangeup slows   knuckleball scores 500\n\n" +
-                "typos break your combo\nthree strikes stun you for 2 seconds",
-                20, new Color(0.26f, 0.2f, 0.16f),
-                TextAnchor.UpperCenter, new Vector2(0.06f, 0.3f), new Vector2(0.94f, 0.7f));
+                "type each pitch before it reaches the plate\n" +
+                "1 or ESC  check swing  (clear typed letters)\n" +
+                "juiced pitches glow and grant power-ups\n" +
+                "hit score goals to face the juggernaut\n" +
+                "three strikes or a crashed boss ends the run",
+                18, new Color(0.26f, 0.2f, 0.16f),
+                TextAnchor.UpperCenter, new Vector2(0.06f, 0.28f), new Vector2(0.94f, 0.68f));
 
-            Button play = PixelUi.Button(card.transform, "PlayButton", "PLAY 60 SECONDS",
-                new Vector2(0f, -130f), new Vector2(360f, 70f));
+            Button play = PixelUi.Button(card.transform, "PlayButton", "PLAY BALL",
+                new Vector2(0f, -150f), new Vector2(360f, 70f));
             play.onClick.AddListener(StartRound);
 
-            Button volumeDown = PixelUi.Button(card.transform, "VolumeDown", "-", new Vector2(-140f, -215f), new Vector2(64f, 56f));
+            Button volumeDown = PixelUi.Button(card.transform, "VolumeDown", "-", new Vector2(-140f, -230f), new Vector2(64f, 56f));
             volumeDown.onClick.AddListener(() => { audioHub.AdjustVolume(-0.1f); UpdateVolumeLabel(); });
 
             volumeText = PixelUi.Label(card.transform, "Volume", "VOLUME 70%", 20, new Color(0.26f, 0.2f, 0.16f),
-                TextAnchor.MiddleCenter, new Vector2(0.34f, 0.06f), new Vector2(0.66f, 0.15f));
+                TextAnchor.MiddleCenter, new Vector2(0.34f, 0.05f), new Vector2(0.66f, 0.14f));
 
-            Button volumeUp = PixelUi.Button(card.transform, "VolumeUp", "+", new Vector2(140f, -215f), new Vector2(64f, 56f));
+            Button volumeUp = PixelUi.Button(card.transform, "VolumeUp", "+", new Vector2(140f, -230f), new Vector2(64f, 56f));
             volumeUp.onClick.AddListener(() => { audioHub.AdjustVolume(0.1f); UpdateVolumeLabel(); });
         }
 
@@ -682,8 +1136,8 @@ namespace BaseballTyping
             finalScoreText = PixelUi.ShadowLabel(scorePlate.transform, "FinalScore", "0", 40, new Color(1f, 0.84f, 0.33f),
                 TextAnchor.MiddleCenter, new Vector2(0.05f, 0.05f), new Vector2(0.95f, 0.95f), true);
 
-            resultText = PixelUi.Label(card.transform, "ResultText", string.Empty, 24, new Color(0.26f, 0.2f, 0.16f),
-                TextAnchor.UpperCenter, new Vector2(0.08f, 0.33f), new Vector2(0.92f, 0.54f));
+            resultText = PixelUi.Label(card.transform, "ResultText", string.Empty, 22, new Color(0.26f, 0.2f, 0.16f),
+                TextAnchor.UpperCenter, new Vector2(0.08f, 0.28f), new Vector2(0.92f, 0.54f));
 
             Button replay = PixelUi.Button(card.transform, "ReplayButton", "PLAY AGAIN", new Vector2(0f, -110f), new Vector2(300f, 66f));
             replay.onClick.AddListener(StartRound);

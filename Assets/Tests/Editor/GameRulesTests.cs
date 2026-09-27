@@ -62,14 +62,78 @@ namespace BaseballTyping.Tests
         }
 
         [Test]
-        public void StrikeThreshold_IsThree()
+        public void StrikeThreshold_EndsRunAfterStun()
         {
             Assert.That(GameRules.StrikesForOut, Is.EqualTo(3));
             Assert.That(GameRules.StrikeoutSeconds, Is.EqualTo(2f));
             Assert.That(RoundTransitions.AfterStrike(2), Is.EqualTo(RoundState.Playing));
             Assert.That(RoundTransitions.AfterStrike(3), Is.EqualTo(RoundState.Stunned));
-            Assert.That(RoundTransitions.AfterStun(0f), Is.EqualTo(RoundState.Playing));
-            Assert.That(RoundTransitions.AfterTimer(0f), Is.EqualTo(RoundState.GameOver));
+            Assert.That(RoundTransitions.AfterStrikeoutStun(0.5f), Is.EqualTo(RoundState.Stunned));
+            Assert.That(RoundTransitions.AfterStrikeoutStun(0f), Is.EqualTo(RoundState.GameOver));
+        }
+
+        [Test]
+        public void LevelThresholds_MatchScoreGates()
+        {
+            Assert.That(GameRules.BossThreshold(1), Is.EqualTo(1000));
+            Assert.That(GameRules.BossThreshold(2), Is.EqualTo(2500));
+            Assert.That(GameRules.BossThreshold(3), Is.EqualTo(4500));
+            Assert.That(GameRules.BossThreshold(4), Is.EqualTo(7000));
+            Assert.That(GameRules.BossThreshold(5), Is.EqualTo(10000));
+            Assert.That(GameRules.PointsToBoss(400, 1), Is.EqualTo(600));
+            Assert.That(GameRules.DifficultyForLevel(1), Is.EqualTo(0f));
+            Assert.That(GameRules.MaxActivePitches(1), Is.EqualTo(4));
+            Assert.That(GameRules.MaxActivePitches(5), Is.EqualTo(6));
+        }
+
+        [Test]
+        public void CorkedBat_CompletesWhenTwoLettersRemain()
+        {
+            Assert.That(GameRules.CorkedCompletes("strike", "stri", true), Is.True);
+            Assert.That(GameRules.CorkedCompletes("strike", "str", true), Is.False);
+            Assert.That(GameRules.CorkedCompletes("strike", "stri", false), Is.False);
+            Assert.That(GameRules.CorkedCompletes("go", "", true), Is.False);
+            Assert.That(GameRules.CorkedCompletes("go", "g", true), Is.True);
+        }
+
+        [Test]
+        public void JuicedRoll_UsesTenPercentChance()
+        {
+            Assert.That(GameRules.ShouldJuice(0.09f), Is.True);
+            Assert.That(GameRules.ShouldJuice(0.10f), Is.False);
+        }
+
+        [Test]
+        public void JuggernautStream_CorrectLettersChipHp()
+        {
+            var stream = new JuggernautStream(new[] { "go", "up" });
+            Assert.That(stream.MaxHp, Is.EqualTo(4));
+            Assert.That(stream.TypeLetter('g'), Is.True);
+            Assert.That(stream.Hp, Is.EqualTo(3));
+            Assert.That(stream.TypeLetter('x'), Is.False);
+            Assert.That(stream.Hp, Is.EqualTo(3));
+        }
+
+        [Test]
+        public void JuggernautStream_CheckSwingClearsTypedLetters()
+        {
+            var stream = new JuggernautStream(new[] { "hit" });
+            stream.TypeLetter('h');
+            stream.TypeLetter('i');
+            stream.CheckSwing();
+            Assert.That(stream.Typed, Is.EqualTo(string.Empty));
+            Assert.That(stream.Hp, Is.EqualTo(stream.MaxHp));
+            Assert.That(stream.CurrentWord, Is.EqualTo("hit"));
+        }
+
+        [Test]
+        public void BonusPoints_IncreaseScoreWithoutCombo()
+        {
+            var tracker = new ScoreTracker();
+            int awarded = tracker.AddBonus(2000);
+            Assert.That(awarded, Is.EqualTo(2000));
+            Assert.That(tracker.Score, Is.EqualTo(2000));
+            Assert.That(tracker.ErrorFreeHits, Is.Zero);
         }
 
         [Test]
